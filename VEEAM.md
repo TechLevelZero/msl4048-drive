@@ -131,7 +131,46 @@ toggles the one being used. For a second drive's job, just change the
 argument, e.g. `tape-power.bat on drive2` — the same `tape-power.bat`
 handles every drive.
 
-## 6. Multiple Veeam jobs against the same library
+## 6. Veeam still shows the library/drive as offline after power-on
+
+Powering the drive off and back on makes it disappear and reappear from
+Windows' (and Veeam's) point of view, the same as unplugging and
+replugging it. Veeam only re-detects that via a **rescan**, and the
+**Veeam Tape Access Service** (`VeeamTapeSvc`) — the service that
+actually talks to the hardware — is commonly reported to hold a stale
+device handle from before the drive went away, so a rescan on its own
+doesn't always pick it back up; restarting that service first is the
+standard fix reported for a tape library/drive stuck showing offline.
+
+The reassuring part: a **rescan** just polls current drive/slot state —
+a few seconds, no tape loaded or read. That's different from an
+**Inventory** job, which is what actually reads tape media and is slow;
+nothing here triggers one. There's no lighter "just mark it online" flag
+— `Enable-VBRTapeDrive`/`Disable-VBRTapeDrive` exist, but that's an
+unrelated administrative toggle for whether Veeam's allowed to use a
+drive at all, not a hardware-status refresh.
+
+`scripts/refresh-veeam-tape.ps1` restarts `VeeamTapeSvc` and rescans the
+tape server(s) via `Rescan-VBREntity`. It's **off by default** — unlike
+the drive power control, this part hasn't been verified end-to-end
+against a live Veeam install, only against Veeam's public PowerShell
+reference and community-reported fixes for this exact scenario. Test it
+manually first:
+
+```bat
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\Scripts\msl4048-drive\scripts\refresh-veeam-tape.ps1
+```
+
+Confirm the drive shows back online in the Veeam console, then set
+`MSL4048_VEEAM_REFRESH=1` in `.env` to have `tape-power.bat` run it
+automatically after every successful power-on (a failure in this step is
+only logged, not treated as a failure of the pre-job script itself,
+since it's newer/less-verified than the drive control). Run this on the
+machine that IS the tape server and has the Veeam PowerShell module
+installed — check `Get-VBRTapeServer` if that's a different box than the
+one running the File to Tape job.
+
+## 7. Multiple Veeam jobs against the same library
 
 This library only allows **one logged-in session at a time**: if two
 scripts log in around the same time, the second one silently kicks the
