@@ -9,24 +9,22 @@ Veeam's script hooks call an executable, not a JS module, so use
 drive name as arguments (`tape-power.bat <on|off|status> [driveName]`)
 and wraps the `src/cli.ts` CLI, which wraps `Drive`.
 
-## 1. Build
+## 1. Run it
 
-```bash
-npm install typescript --save-dev
-npm run build
-```
-
-This produces `dist/cli.js`, which `scripts/tape-power.bat` calls. If
-you'd rather skip the build step, edit that file to point at `src\cli.ts`
-instead of `dist\cli.js` (requires Node 22.6+).
+`tape-power.bat` runs `src\cli.ts` directly — Node 22.6+ executes
+TypeScript with no build step needed, so there's nothing to compile for
+this to work. If you'd rather run compiled JS instead, `npm install
+typescript --save-dev && npm run build` produces `dist/cli.js`; edit
+`tape-power.bat` to point at that instead of `src\cli.ts` if you do.
 
 ## 2. Set connection details in a `.env` file on the Veeam server
 
 The CLI deliberately takes **no password on the command line** — Veeam
 stores script paths/arguments in the job configuration and logs them, and
 a password there would be visible to anyone who can view the job. Instead,
-copy `.env.example` to `.env` next to `dist/cli.js` on the machine that
-runs the Veeam job, and fill in real values:
+copy `.env.example` to `.env` in the project root (one level up from
+`scripts/`) on the machine that runs the Veeam job, and fill in real
+values:
 
 ```
 MSL4048_HOST=<library-ip-or-hostname>
@@ -47,10 +45,15 @@ Veeam:
 C:\Scripts\msl4048-drive\scripts\tape-power.bat status drive1
 ```
 
-If `node` isn't on `PATH` for the account the Veeam Backup Service runs
-as, you'll see it fail here — edit the `node` call near the bottom of
-`tape-power.bat` to the full path, e.g.
-`"C:\Program Files\nodejs\node.exe"`.
+**If this fails with exit code 9009 when run from Veeam but works fine in
+your own `cmd`/PowerShell**: that's Windows saying `node` couldn't be
+found. It works interactively because your user's `PATH` includes it —
+the Veeam Backup Service runs as a different account (its own service
+account, or `SYSTEM`) with a different `PATH` that usually doesn't.
+`tape-power.bat` auto-detects a standard Node.js installer location, but
+if that doesn't match your setup (nvm, a per-user install, a zip
+extract), run `where node` in your own `cmd` to find the real path and
+hardcode it into the `NODE_EXE` line near the top of `tape-power.bat`.
 
 ## 3. Configure the job's pre-job / post-job scripts
 
@@ -117,7 +120,7 @@ someone checking `status` by hand) can overlap in time — e.g. two File to
 Tape jobs on staggered schedules, or a job that overruns into the next
 one's start time.
 
-`cli.js` handles this automatically: each invocation takes an exclusive
+The CLI handles this automatically: each invocation takes an exclusive
 lock (a plain file, under the OS temp directory by default) before
 logging in, and only releases it once it logs out at the end. A second
 job's script trying to run at the same time will simply wait for the
