@@ -45,15 +45,36 @@ Veeam:
 C:\Scripts\msl4048-drive\scripts\tape-power.bat status drive1
 ```
 
-**If this fails with exit code 9009 when run from Veeam but works fine in
-your own `cmd`/PowerShell**: that's Windows saying `node` couldn't be
-found. It works interactively because your user's `PATH` includes it —
-the Veeam Backup Service runs as a different account (its own service
-account, or `SYSTEM`) with a different `PATH` that usually doesn't.
-`tape-power.bat` auto-detects a standard Node.js installer location, but
-if that doesn't match your setup (nvm, a per-user install, a zip
-extract), run `where node` in your own `cmd` to find the real path and
-hardcode it into the `NODE_EXE` line near the top of `tape-power.bat`.
+### Troubleshooting: it works in `cmd` but fails when Veeam runs it
+
+Veeam only reports the exit code for these scripts, not their output, so
+`tape-power.bat` logs everything it runs to `tape-power.log` next to
+itself — **check that file after a failed Veeam run to see the actual
+error.** The most common causes:
+
+- **Exit code 9009** — Windows couldn't find `node`. This works
+  interactively because your user's `PATH` includes it; the Veeam Backup
+  Service runs as a different account (its own service account, or
+  `SYSTEM`) with a different `PATH` that usually doesn't.
+  `tape-power.bat` auto-detects a standard Node.js installer location,
+  but if that doesn't match your setup (nvm, a per-user install, a zip
+  extract), run `where node` in your own `cmd` to find the real path and
+  hardcode it into the `NODE_EXE` line near the top of `tape-power.bat`.
+
+- **Exit code 1** — the CLI ran but hit a runtime error; `tape-power.log`
+  will have the exact message on the line right before "exit code 1".
+  This is usually something that differs between your interactive session
+  and the service account Veeam runs as, e.g.:
+  - `.env` isn't readable by that account — check its NTFS permissions
+    include whatever account the Veeam Backup Service runs as, not just
+    your own user.
+  - The library isn't reachable from that account's context (rare, but
+    possible with per-user proxy/firewall configuration).
+  - A lock-related error creating a temp file — the service account may
+    resolve a different, less permissive temp directory
+    (`%TEMP%`/`os.tmpdir()` differs per account) than your own `cmd`
+    session does. If so, set `MSL4048_LOCK_FILE` in `.env` to an explicit
+    path you know that account can write to.
 
 ## 3. Configure the job's pre-job / post-job scripts
 
@@ -96,9 +117,10 @@ the drive powered back off even if the tape job fails partway through.
 - **Post-job**: `tape-power.bat off drive1` does the same in reverse once
   the backup job itself has finished.
 - A non-zero exit code (`1` runtime error, `2` usage/config error) tells
-  Veeam the script failed; check the job's log or Windows Event Log for
-  the message the CLI printed to stderr. `tape-power.bat` forwards the
-  CLI's exit code with `exit /b %ERRORLEVEL%`.
+  Veeam the script failed; check `tape-power.log` for the message the CLI
+  printed (see Troubleshooting above — Veeam itself only shows the exit
+  code). `tape-power.bat` forwards the CLI's exit code with
+  `exit /b %ERRORLEVEL%`.
 
 ## 5. Multiple drives
 

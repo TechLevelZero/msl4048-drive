@@ -6,6 +6,10 @@ rem appropriate arguments, e.g.:
 rem   Pre-job:  tape-power.bat on drive1
 rem   Post-job: tape-power.bat off drive1
 rem
+rem Veeam only shows the exit code for these scripts, not their output, so
+rem everything below is also logged to tape-power.log next to this file -
+rem check that after a failed run to see the actual error.
+rem
 rem Exit code 9009 means "node" could not be found. It's common for this
 rem to work fine in your own interactive cmd/PowerShell (which has your
 rem user's PATH) but fail when Veeam runs it, since the Veeam Backup
@@ -33,5 +37,10 @@ if exist "%ProgramFiles%\nodejs\node.exe" set "NODE_EXE=%ProgramFiles%\nodejs\no
 if exist "%ProgramFiles(x86)%\nodejs\node.exe" set "NODE_EXE=%ProgramFiles(x86)%\nodejs\node.exe"
 
 set "PROJECT_DIR=%~dp0.."
-"%NODE_EXE%" --env-file="%PROJECT_DIR%\.env" "%PROJECT_DIR%\src\cli.ts" %*
-exit /b %ERRORLEVEL%
+set "LOG_FILE=%~dp0tape-power.log"
+
+echo [%date% %time%] running as %USERDOMAIN%\%USERNAME%, args="%*", NODE_EXE="%NODE_EXE%" >> "%LOG_FILE%"
+"%NODE_EXE%" --env-file="%PROJECT_DIR%\.env" "%PROJECT_DIR%\src\cli.ts" %* >> "%LOG_FILE%" 2>&1
+set "EXITCODE=%ERRORLEVEL%"
+echo [%date% %time%] exit code %EXITCODE% >> "%LOG_FILE%"
+exit /b %EXITCODE%
