@@ -18,6 +18,8 @@
  *   MSL4048_PASSWORD         password for MSL4048_PRIVILEGE_LEVEL (required)
  *   MSL4048_PRIVILEGE_LEVEL  user | administrator | service (default: administrator)
  *   MSL4048_DRIVES           comma list of name=slot, e.g. "drive1=1,drive2=2" (default: drive1=1)
+ *   MSL4048_LOCK_FILE        path to the cross-process lock (default: auto, per-host, under the OS temp dir)
+ *                            - set this to a shared/UNC path if more than one machine talks to the library
  *
  * Exit codes: 0 success, 1 runtime/library error, 2 usage error.
  */
@@ -45,6 +47,7 @@ function usage(): never {
             '  MSL4048_PASSWORD         password for MSL4048_PRIVILEGE_LEVEL (required)',
             '  MSL4048_PRIVILEGE_LEVEL  user | administrator | service (default: administrator)',
             '  MSL4048_DRIVES           comma list of name=slot, e.g. "drive1=1,drive2=2" (default: drive1=1)',
+            '  MSL4048_LOCK_FILE        cross-process lock path (default: auto, per-host, under the OS temp dir)',
             '',
             'Examples:',
             '  cli.js on drive1',
@@ -80,6 +83,7 @@ async function main(): Promise<void> {
         password,
         privilegeLevel,
         drives,
+        lockFilePath: process.env.MSL4048_LOCK_FILE,
     });
 
     try {
@@ -97,7 +101,7 @@ async function main(): Promise<void> {
         const info = action === 'on' ? await tape.poweron(driveName) : await tape.poweroff(driveName);
         console.log(JSON.stringify(info, null, 4));
     } finally {
-        tape.close();
+        await tape.close();
     }
 }
 

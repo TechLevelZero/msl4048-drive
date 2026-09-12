@@ -1,6 +1,9 @@
 import { Agent, request as httpsRequest } from 'node:https';
 import { constants as cryptoConstants } from 'node:crypto';
 import type { IncomingHttpHeaders, OutgoingHttpHeaders } from 'node:http';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 
 /**
  * Drives the embedded web UI of an HPE StoreEver MSL4048 tape library
@@ -10,6 +13,14 @@ import type { IncomingHttpHeaders, OutgoingHttpHeaders } from 'node:http';
  * from the RMU (Remote Management Unit) web pages.
  *
  * Only drive power is touched here, never the library chassis power.
+ *
+ * The library only supports one logged-in RMU session at a time: a new
+ * login silently kicks out whatever session was previously active,
+ * without any warning to it. To make this safe when several jobs/scripts
+ * on the same machine talk to the same library, every Drive instance
+ * takes a cross-process file lock (see `lockFilePath`) before logging in
+ * and holds it until `close()` is called, so overlapping calls queue up
+ * instead of stomping on each other's session mid-operation.
  */
 
 export type PrivilegeLevel = 'user' | 'administrator' | 'service';
@@ -54,6 +65,26 @@ export interface TapeDriveOptions {
     powerChangeTimeoutMs?: number;
     /** How often to poll while waiting for a power change to apply, in ms. Defaults to 10000. */
     powerChangePollIntervalMs?: number;
+    /**
+     * Path to a lock file/directory used to serialize access to this library
+     * across processes (the library allows only one logged-in session at a
+     * time). Defaults to a path under the OS temp directory, keyed by host,
+     * so every Drive instance on this machine targeting the same host
+     * automatically shares the same lock with no configuration needed.
+     * Point multiple machines at a shared (e.g. UNC) path if more than one
+     * host can reach this library.
+     */
+    lockFilePath?: string;
+    /** How long to wait to acquire the lock before giving up, in ms. Defaults to 15 minutes. */
+    lockWaitTimeoutMs?: number;
+    /** How often to check whether the lock has freed up, in ms. Defaults to 2000. */
+    lockPollIntervalMs?: number;
+    /**
+     * A lock older than this is assumed to belong to a crashed process and
+     * is reclaimed rather than waited out, in ms. Defaults to 10 minutes -
+     * comfortably longer than a legitimate power change can take.
+     */
+    lockStaleMs?: number;
 }
 
 export type PowerActionCallback = (error: Error | null, info?: DriveInfo) => void;
@@ -90,6 +121,12 @@ export class Drive {
     private readonly powerChangeTimeoutMs: number;
     private readonly powerChangePollIntervalMs: number;
 
+    private readonly lockPath: string;
+    private readonly lockWaitTimeoutMs: number;
+    private readonly lockPollIntervalMs: number;
+    private readonly lockStaleMs: number;
+    private lockHeld = false;
+
     private readonly agent: Agent;
     private readonly cookies = new Map<string, string>();
     private loginPromise: Promise<void> | null = null;
@@ -106,6 +143,13 @@ export class Drive {
         this.requestTimeoutMs = options.requestTimeoutMs ?? 15_000;
         this.powerChangeTimeoutMs = options.powerChangeTimeoutMs ?? 5 * 60_000;
         this.powerChangePollIntervalMs = options.powerChangePollIntervalMs ?? 10_000;
+
+        this.lockWaitTimeoutMs = options.lockWaitTimeoutMs ?? 15 * 60_000;
+        this.lockPollIntervalMs = options.lockPollIntervalMs ?? 2_000;
+        this.lockStaleMs = options.lockStaleMs ?? 10 * 60_000;
+        this.lockPath =
+            options.lockFilePath ??
+            path.join(os.tmpdir(), `msl4048-drive-${this.host.replace(/[^a-zA-Z0-9.-]/g, '_')}.lock`);
 
         // The library's embedded webserver runs firmware old enough that it
         // needs TLS 1.2 with a relaxed security level (1024-bit cert, weak
@@ -152,8 +196,24 @@ export class Drive {
         return this.rowToInfo(name, rows);
     }
 
-    /** Release the keep-alive TLS connection(s) held by this instance. */
-    close(): void {
+    /**
+     * Log out (best-effort), release the exclusive lock on this library so
+     * other processes can log in, and release the keep-alive TLS
+     * connection(s) held by this instance. Always call this when done -
+     * the library only allows one session at a time, so holding the lock
+     * any longer than necessary blocks every other job/script targeting it.
+     */
+    async close(): Promise<void> {
+        if (this.cookies.has('RMU_SESSIONNO')) {
+            try {
+                await this.rawRequest('GET', '/logout.ssi');
+            } catch {
+                // Best-effort - the local lock release below is what actually
+                // matters for correctness, this just frees the device's
+                // session slot a little sooner.
+            }
+        }
+        this.releaseLock();
         this.agent.destroy();
     }
 
@@ -254,6 +314,72 @@ export class Drive {
         throw new Error('Timed out waiting for the MSL4048 to finish applying the drive power change');
     }
 
+    // ---- Cross-process lock -----------------------------------------------
+
+    private acquireLock(): Promise<void> {
+        return new Promise((resolve, reject) => {
+            const deadline = Date.now() + this.lockWaitTimeoutMs;
+
+            const tryAcquire = (): void => {
+                try {
+                    // mkdir is atomic - exactly one concurrent caller can
+                    // create a given directory, making it a serviceable mutex.
+                    fs.mkdirSync(this.lockPath);
+                    this.lockHeld = true;
+                    resolve();
+                    return;
+                } catch (err) {
+                    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') {
+                        reject(toError(err));
+                        return;
+                    }
+                }
+
+                // Someone else holds the lock - reclaim it if it looks
+                // abandoned (e.g. a previous process crashed before it
+                // could call close()), otherwise wait and retry.
+                try {
+                    const { mtimeMs } = fs.statSync(this.lockPath);
+                    if (Date.now() - mtimeMs > this.lockStaleMs) {
+                        fs.rmdirSync(this.lockPath);
+                        tryAcquire();
+                        return;
+                    }
+                } catch {
+                    // Lock disappeared between our mkdir failing and this
+                    // stat - just retry immediately.
+                    tryAcquire();
+                    return;
+                }
+
+                if (Date.now() > deadline) {
+                    reject(
+                        new Error(
+                            `Timed out after ${this.lockWaitTimeoutMs}ms waiting for exclusive access to ` +
+                                `${this.host} (lock: ${this.lockPath}). Another process is likely mid-operation ` +
+                                'against this library - it only supports one logged-in session at a time.',
+                        ),
+                    );
+                    return;
+                }
+
+                setTimeout(tryAcquire, this.lockPollIntervalMs);
+            };
+
+            tryAcquire();
+        });
+    }
+
+    private releaseLock(): void {
+        if (!this.lockHeld) return;
+        try {
+            fs.rmdirSync(this.lockPath);
+        } catch {
+            // Already gone - nothing left to clean up.
+        }
+        this.lockHeld = false;
+    }
+
     // ---- Session / login ------------------------------------------------
 
     private async ensureLoggedIn(): Promise<void> {
@@ -267,6 +393,12 @@ export class Drive {
     }
 
     private async login(): Promise<void> {
+        // The library only allows one active session; hold this lock for
+        // the rest of this instance's life (released in close()) so no
+        // other process can log in - and silently kick us out - while
+        // we're mid-operation.
+        await this.acquireLock();
+
         // The login page's own JavaScript writes these three throwaway
         // cookies right before submitting the form; the server rejects the
         // POST outright without them (checked server-side, not just client).

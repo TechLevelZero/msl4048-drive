@@ -73,7 +73,7 @@ tape.poweroff('drive1', (err, info) => {
 await tape.status('drive1'); // one drive
 await tape.status();         // every configured drive
 
-tape.close(); // release the keep-alive TLS connection when you're done
+await tape.close(); // log out and release the lock so other jobs/scripts can proceed
 ```
 
 Run `example.ts` for a full working demo:
@@ -105,6 +105,10 @@ after it finishes.
 | `requestTimeoutMs`            | `number`                 | `15000`               | Per-HTTP-request timeout.                                             |
 | `powerChangeTimeoutMs`        | `number`                 | `300000` (5 min)      | How long to wait for a power change to finish applying.               |
 | `powerChangePollIntervalMs`   | `number`                 | `10000`               | How often to poll while waiting.                                      |
+| `lockFilePath`                | `string`                 | *(auto, per-host)*    | See [Concurrent access](#concurrent-access-multiple-veeam-jobs) below. |
+| `lockWaitTimeoutMs`           | `number`                 | `900000` (15 min)     | How long to wait to acquire the lock before giving up.                |
+| `lockPollIntervalMs`          | `number`                 | `2000`                | How often to check whether the lock has freed up.                     |
+| `lockStaleMs`                 | `number`                 | `600000` (10 min)     | A lock older than this is assumed abandoned (crashed process) and reclaimed. |
 
 ### `tape.poweron(name)` / `tape.poweroff(name)`
 
@@ -139,9 +143,41 @@ resolve/call back once the change has actually finished applying.
 
 ### `tape.close()`
 
-Releases the keep-alive TLS connection held by this `Drive` instance. Call
-it when you're done, especially in short-lived scripts, so the process can
-exit.
+Logs out (best-effort), releases the cross-process lock so other jobs or
+scripts can proceed, and releases the keep-alive TLS connection held by
+this instance. Returns a `Promise<void>` — `await` it. **Always call this
+when done**: see below for why holding it longer than necessary blocks
+other work against the same library.
+
+## Concurrent access (multiple Veeam jobs)
+
+This library only allows **one logged-in session at a time**. If a second
+login happens while another session is still active, the library silently
+kicks the first one out — there's no error, no rejection of the second
+login, the first session's next request just gets logged out from under
+it. This was confirmed directly against the hardware: logging in twice in
+a row invalidates the first session immediately.
+
+Practically, this means if two Veeam jobs' pre/post scripts (or a job and
+a manual `status` check) hit the same library within the same window —
+which can be several minutes, since a power change itself takes that long
+— the second one can silently break the first mid-operation.
+
+`Drive` handles this for you: every instance takes an exclusive,
+cross-process file lock (`lockFilePath`, defaulting to a path under the OS
+temp directory keyed by host) before logging in, and holds it until
+`close()` is called. A second `Drive` instance — in another Veeam job's
+script, another process, anywhere on the same machine — targeting the
+same host will simply wait for the lock rather than colliding. This is
+why `close()` is `async` and must be awaited: it needs to complete the
+logout and release the lock before the process exits, or the next job
+will queue behind a lock nobody is going to release until it goes stale
+(`lockStaleMs`, 10 minutes by default).
+
+If Veeam jobs targeting this library run from **more than one machine**,
+point `lockFilePath` (or `MSL4048_LOCK_FILE` for the CLI) at a shared
+path, such as a UNC path, so they share one lock instead of each machine
+only serializing its own local jobs.
 
 ## How `drives` mapping works
 

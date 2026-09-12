@@ -91,3 +91,32 @@ set `MSL4048_DRIVES` to include all of them (e.g. `drive1=1,drive2=2`) so
 `Drive` can correctly preserve the other drive's power state when it
 toggles the one being used — then just pass the specific drive name
 (`on drive1`) in the script arguments for that job.
+
+## 6. Multiple Veeam jobs against the same library
+
+This library only allows **one logged-in session at a time**: if two
+scripts log in around the same time, the second one silently kicks the
+first one's session out mid-operation — confirmed directly against the
+hardware, not a theoretical concern. Since a power-on/off can take a few
+minutes, this matters as soon as more than one job's pre/post scripts (or
+someone checking `status` by hand) can overlap in time — e.g. two File to
+Tape jobs on staggered schedules, or a job that overruns into the next
+one's start time.
+
+`cli.js` handles this automatically: each invocation takes an exclusive
+lock (a plain file, under the OS temp directory by default) before
+logging in, and only releases it once it logs out at the end. A second
+job's script trying to run at the same time will simply wait for the
+first to finish rather than colliding — you don't need to stagger job
+schedules by hand to avoid this.
+
+The one case that needs an extra step: if File to Tape jobs for this
+library run from **more than one Veeam server/proxy**, a local temp-dir
+lock on one machine can't be seen by the other. Set `MSL4048_LOCK_FILE` in
+each machine's `.env` to the same shared path (e.g. a UNC path both can
+reach) so they share one lock instead of each only serializing its own
+jobs:
+
+```
+MSL4048_LOCK_FILE=\\fileserver\share\msl4048-drive.lock
+```
