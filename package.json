@@ -1,0 +1,17 @@
+{
+    "name": "msl4048-drive",
+    "version": "0.1.0",
+    "description": "Programmatic power control for HPE StoreEver MSL4048 tape drives via the library's embedded web UI (no vendor API exists).",
+    "type": "module",
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "files": [
+        "dist"
+    ],
+    "scripts": {
+        "build": "tsc -p ."
+    },
+    "engines": {
+        "node": ">=18"
+    }
+}
