@@ -11,7 +11,7 @@ rem replace "node" below with the full path, e.g.
 rem "C:\Program Files\nodejs\node.exe".
 rem
 rem Requires .env (see .env.example) to exist one folder up, next to
-rem dist\cli.js (i.e. run `npm run build` first).
+rem src\cli.ts (i.e. run `npm run build` first).
 
 setlocal
 if "%~1"=="" (
@@ -20,5 +20,5 @@ if "%~1"=="" (
 )
 
 set "PROJECT_DIR=%~dp0.."
-node --env-file="%PROJECT_DIR%\.env" "%PROJECT_DIR%\dist\cli.js" %*
+node --env-file="%PROJECT_DIR%\.env" "%PROJECT_DIR%\src\cli.ts" %*
 exit /b %ERRORLEVEL%
