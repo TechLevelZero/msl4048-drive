@@ -87,9 +87,11 @@ node --env-file=.env example.ts
 `src/cli.ts` wraps `Drive` as a small CLI (`cli.js <on|off|status> [driveName]`,
 config via environment variables) for use from schedulers/orchestrators
 that can only call an executable rather than import a module — e.g. Veeam's
-pre-job/post-job script hooks. See [VEEAM.md](./VEEAM.md) for a worked
-example of powering the drive on before a File to Tape job and off again
-after it finishes.
+pre-job/post-job script hooks. `scripts/tape-power.bat` wraps that further
+into a Windows batch file (`tape-power.bat <on|off|status> [driveName]`)
+ready to point a Veeam script field at. See [VEEAM.md](./VEEAM.md) for a
+worked example of powering the drive on before a File to Tape job and off
+again after it finishes.
 
 ## API
 
